@@ -4,7 +4,7 @@ import random
 
 # CONFIG
 # Public /48 range
-public_prefix = "2001:db8::/48"
+public_prefix = "2a0e:1cc0:12::1/48"
 # Private range to be SNAT'ted from
 privateV6 = "fdbf:e8f7:b417:575a::/64"
 # END CONFIG
@@ -24,6 +24,16 @@ def random_ipv6_address(subnet):
     # Combine the network address of the subnet with the random host part
     return subnet.network_address + host_part
 
+def create_ipset_set(public_subnets):
+    # Create an ipset set to store the random IPs
+    subprocess.run(["ipset", "create", "random_ips", "hash:ip", "maxelem", str(len(public_subnets))])
+
+def add_ips_to_ipset(public_subnets):
+    # Add random IPs to the ipset set
+    for subnet in public_subnets:
+        random_ip = random_ipv6_address(subnet)
+        subprocess.run(["ipset", "add", "random_ips", str(random_ip)])
+
 def balance_snat_traffic(public_prefix, privateV6):
     public_subnets = split_ipv6_prefix(public_prefix)
     
@@ -33,20 +43,22 @@ def balance_snat_traffic(public_prefix, privateV6):
 
     print(f"PORT_RANGE_START: {PORT_RANGE_START}, PORT_RANGE_END: {PORT_RANGE_END}")
     PORT_RANGE_COUNT = PORT_RANGE_END - PORT_RANGE_START + 1
-    i = 0
 
+    # Create an ipset set and add random IPs to it
+    create_ipset_set(public_subnets)
+    add_ips_to_ipset(public_subnets)
+
+    # Iterate through local ports and apply SNAT rules
     for port_index in range(PORT_RANGE_COUNT):
-        random_subnet = random.choice(public_subnets)
-        random_ip = random_ipv6_address(random_subnet)
         random_port = PORT_RANGE_START + port_index
-        print(f"{random_port} -> {random_ip}")
+        print(f"{random_port} -> SNAT from ipset set")
         
         subprocess.run(
             ["ip6tables", "-t", "nat", "-A", "POSTROUTING", "-p", "udp", "--sport", str(random_port), "-s",
-             privateV6, "-j", "SNAT", "--to-source", str(random_ip)])
+             privateV6, "-m", "set", "--match-set", "random_ips", "src", "-j", "SNAT"])
         subprocess.run(
             ["ip6tables", "-t", "nat", "-A", "POSTROUTING", "-p", "tcp", "--sport", str(random_port), "-s",
-             privateV6, "-j", "SNAT", "--to-source", str(random_ip)])
+             privateV6, "-m", "set", "--match-set", "random_ips", "src", "-j", "SNAT"])
 
 if __name__ == "__main__":
     balance_snat_traffic(public_prefix, privateV6)
